@@ -41,8 +41,13 @@ fi
 
 remove_path() {
     local target="$1"
+    local err
     if [[ -e "$target" || -L "$target" ]]; then
-        rm -rf "$target" 2>/dev/null && ok "Deleted: $target" || warn "Could not delete: $target"
+        if err=$(rm -rf "$target" 2>&1); then
+            ok "Deleted: $target"
+        else
+            warn "Could not delete: $target ($err)"
+        fi
     fi
 }
 
