@@ -241,12 +241,36 @@ sudo rm -rf /Applications/R.app
 sudo pkgutil --forget org.r-project.R.*
 ```
 
+## 🍏 VMware Horizon Client Removal (macOS)
+
+**`Remove-VMwareHorizonClient.sh`** completely uninstalls VMware Horizon Client from a Mac.
+
+### What It Does
+
+- ✅ Quits Horizon Client if it's currently running
+- ✅ Uninstalls via Homebrew (`brew uninstall --cask --zap vmware-horizon-client`) if that's how it was installed
+- ✅ Unloads and deletes related LaunchAgents/LaunchDaemons (USB redirection, RTAV, drive redirection, etc.)
+- ✅ Deletes `/Applications/VMware Horizon Client.app`
+- ✅ Flags any lingering system extensions (must be finished off in System Settings)
+- ✅ Removes user and system-wide data, preferences, caches, and logs
+- ✅ Forgets any `pkgutil` package receipts left by a `.pkg` installer
+
+### Usage
+
+```bash
+chmod +x Remove-VMwareHorizonClient.sh
+./Remove-VMwareHorizonClient.sh
+```
+
+The script will prompt for your password via `sudo` when it needs to remove system daemons, the application bundle, or package receipts.
+
 ## 📄 Files
 
 | File | Description |
 |------|-------------|
 | `Reset-ClaudeDesktop.ps1` | PowerShell script to reinstall Claude Desktop (Windows) |
 | `Remove-RStudio.sh` | Bash script to remove RStudio Desktop (macOS) |
+| `Remove-VMwareHorizonClient.sh` | Bash script to remove VMware Horizon Client (macOS) |
 | `README.md` | This documentation |
 
 ## 🤝 Contributing
