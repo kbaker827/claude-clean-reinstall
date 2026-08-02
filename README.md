@@ -2,6 +2,8 @@
 
 **A PowerShell script to completely remove and reinstall Claude Desktop, fixing Cowork virtualization issues.**
 
+> Also included: `Remove-RStudio.sh`, a bash script to completely remove RStudio Desktop from macOS. See [RStudio Removal (macOS)](#-rstudio-removal-macos) below.
+
 ## 🎯 What It Does
 
 This script performs a complete clean reinstall of Claude Desktop with special attention to fixing the **Cowork** feature's virtualization requirements.
@@ -203,11 +205,48 @@ Then **reboot** and re-run the script.
 - ✅ **Non-destructive** - Only removes Claude-related files
 - ✅ **Reversible** - You can always reinstall Claude normally
 
+## 🍏 RStudio Removal (macOS)
+
+**`Remove-RStudio.sh`** completely uninstalls RStudio Desktop from a Mac.
+
+### What It Does
+
+- ✅ Quits RStudio if it's currently running
+- ✅ Uninstalls via Homebrew (`brew uninstall --cask --zap rstudio`) if that's how it was installed
+- ✅ Deletes `/Applications/RStudio.app`
+- ✅ Removes user data, preferences, caches, saved state, and logs
+- ✅ Forgets any `pkgutil` package receipts left by a `.pkg` installer
+- ✅ Does **not** remove R itself — only RStudio
+
+### Usage
+
+```bash
+chmod +x Remove-RStudio.sh
+./Remove-RStudio.sh
+```
+
+The script will prompt for your password via `sudo` when it needs to delete the application bundle or package receipts.
+
+### Removing R Too
+
+RStudio is just the IDE — the R language runtime is separate. If you also want to remove R:
+
+```bash
+# If installed via Homebrew
+brew uninstall --cask r
+
+# Manual install
+sudo rm -rf /Library/Frameworks/R.framework
+sudo rm -rf /Applications/R.app
+sudo pkgutil --forget org.r-project.R.*
+```
+
 ## 📄 Files
 
 | File | Description |
 |------|-------------|
-| `Reset-ClaudeDesktop.ps1` | Main PowerShell script |
+| `Reset-ClaudeDesktop.ps1` | PowerShell script to reinstall Claude Desktop (Windows) |
+| `Remove-RStudio.sh` | Bash script to remove RStudio Desktop (macOS) |
 | `README.md` | This documentation |
 
 ## 🤝 Contributing
