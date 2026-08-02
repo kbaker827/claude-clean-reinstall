@@ -203,11 +203,36 @@ Then **reboot** and re-run the script.
 - ✅ **Non-destructive** - Only removes Claude-related files
 - ✅ **Reversible** - You can always reinstall Claude normally
 
+## 🍎 Bonus: Remove Microsoft Teams (macOS)
+
+**`Remove-MicrosoftTeams.sh`** completely uninstalls Microsoft Teams from a Mac — both the classic client and the new "Microsoft Teams (work or school)" client.
+
+### What it removes
+
+- ✅ Running Teams processes and helper daemons
+- ✅ LaunchAgents/LaunchDaemons (e.g. `TeamsUpdaterDaemon`)
+- ✅ Login Items entries
+- ✅ `/Applications/Microsoft Teams*.app`
+- ✅ `~/Library/Application Support`, `Caches`, `Preferences`, `Logs`, `Saved Application State`, `WebKit`, `HTTPStorages`, `Cookies`
+- ✅ Sandboxed `Containers` / `Group Containers` data for the new Teams client
+- ✅ System-wide `/Library` leftovers (when run with `sudo`)
+
+### Usage
+
+```bash
+chmod +x Remove-MicrosoftTeams.sh
+./Remove-MicrosoftTeams.sh
+
+# To also remove system-wide /Library leftovers:
+sudo ./Remove-MicrosoftTeams.sh
+```
+
 ## 📄 Files
 
 | File | Description |
 |------|-------------|
-| `Reset-ClaudeDesktop.ps1` | Main PowerShell script |
+| `Reset-ClaudeDesktop.ps1` | Main PowerShell script (Windows) |
+| `Remove-MicrosoftTeams.sh` | Complete Microsoft Teams removal script (macOS) |
 | `README.md` | This documentation |
 
 ## 🤝 Contributing
