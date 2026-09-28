@@ -33,7 +33,7 @@
     .\Reset-ClaudeDesktop.ps1 -Force -SkipBackup
 
 .EXAMPLE
-    & ([scriptblock]::Create((irm <raw-url-of-this-script>))) -Force
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/kbaker827/claude-clean-reinstall/main/Reset-ClaudeDesktop.ps1))) -Force
 #>
 
 [CmdletBinding()]
