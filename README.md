@@ -29,23 +29,23 @@ This script performs a complete clean reinstall of Claude Desktop with special a
 
 ### One-Line Run
 
-From a PowerShell window opened with **Run as administrator** (replace `<owner>` with the GitHub account hosting this repo):
+From a PowerShell window opened with **Run as administrator**:
 
 ```powershell
-irm https://raw.githubusercontent.com/<owner>/claude-clean-reinstall/main/Reset-ClaudeDesktop.ps1 | iex
+irm https://raw.githubusercontent.com/kbaker827/claude-clean-reinstall/main/Reset-ClaudeDesktop.ps1 | iex
 ```
 
 To pass options with the one-liner:
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/<owner>/claude-clean-reinstall/main/Reset-ClaudeDesktop.ps1))) -Force
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/kbaker827/claude-clean-reinstall/main/Reset-ClaudeDesktop.ps1))) -Force
 ```
 
 Or download and run it (opens an elevated window for you):
 
 ```powershell
 # 1. Download the script
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/<owner>/claude-clean-reinstall/main/Reset-ClaudeDesktop.ps1" -OutFile "$env:TEMP\Reset-ClaudeDesktop.ps1"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/kbaker827/claude-clean-reinstall/main/Reset-ClaudeDesktop.ps1" -OutFile "$env:TEMP\Reset-ClaudeDesktop.ps1"
 
 # 2. Run as Administrator
 Start-Process powershell.exe -ArgumentList "-NoExit -ExecutionPolicy Bypass -File `"$env:TEMP\Reset-ClaudeDesktop.ps1`"" -Verb RunAs
@@ -262,6 +262,7 @@ Found an issue or have an improvement? Open an issue or PR! CI runs PSScriptAnal
 
 ## 🔗 Links
 
+- **Repository:** https://github.com/kbaker827/claude-clean-reinstall
 - **Claude Desktop:** https://claude.com/download
 - **Deploying Claude Desktop for Windows:** https://support.claude.com/en/articles/12622703-deploy-claude-desktop-for-windows
 - **Anthropic Support:** https://support.claude.com
