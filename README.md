@@ -10,10 +10,11 @@ This script performs a complete clean reinstall of Claude Desktop with special a
 
 - ✅ **Enables virtualization** - Virtual Machine Platform (required by Cowork), optionally Hyper-V
 - ✅ **Checks the hypervisor** - Warns if VT-x/AMD-V is off in firmware, fixes `hypervisorlaunchtype Off`
-- ✅ **Backs up your settings** - Copies `claude_desktop_config.json` (MCP servers) and other settings to your Desktop first
+- ✅ **Downloads before it deletes** - Gets and verifies the new installer *before* removing anything, so a failed download never leaves you without Claude
+- ✅ **Backs up your settings** - Copies `claude_desktop_config.json` (MCP servers) and extension settings to your Desktop first
 - ✅ **Full uninstallation** - Removes MSIX packages (including duplicates and provisioned copies) and classic installs
 - ✅ **Stops/removes CoworkVMService** - Cleans up the Cowork service
-- ✅ **Deletes leftover data** - Cleans up Claude's AppData folders
+- ✅ **Deletes leftover data** - Cleans up Claude's data folders, including `%LOCALAPPDATA%\Claude-Data` used by current versions
 - ✅ **Downloads the official installer** - Correct build for x64 or ARM64
 - ✅ **Verifies the installer** - Refuses to run it unless it has a valid Anthropic signature
 - ✅ **Safe to run via `irm | iex`** - Never closes your PowerShell window
@@ -64,6 +65,8 @@ Start-Process powershell.exe -ArgumentList "-NoExit -ExecutionPolicy Bypass -Fil
    ```
    If you get an execution-policy error, run `powershell -ExecutionPolicy Bypass -File .\Reset-ClaudeDesktop.ps1` instead.
 
+> ⚠️ Run it from a **separate** PowerShell window, not from a terminal inside Claude Desktop - closing Claude would kill the script halfway. The script refuses to run inside Claude.
+
 > ⚠️ Use your **own** Windows account elevated as admin. If you elevate with a *different* admin account, the per-user cleanup applies to that account instead - the script warns you if it detects this.
 
 ### Options
@@ -74,6 +77,7 @@ Start-Process powershell.exe -ArgumentList "-NoExit -ExecutionPolicy Bypass -Fil
 | `-EnableHyperV` | Also enable full Hyper-V and Windows Hypervisor Platform (not needed by Cowork; not available on Windows Home) |
 | `-SkipBackup` | Don't back up Claude Desktop settings |
 | `-SkipInstall` | Only uninstall and clean up; don't reinstall |
+| `-InstallerPath <file>` | Use an installer you downloaded yourself from [claude.com/download](https://claude.com/download) (still signature-checked) |
 
 ## 📋 What the Script Does
 
@@ -86,21 +90,31 @@ Start-Process powershell.exe -ArgumentList "-NoExit -ExecutionPolicy Bypass -Fil
 
 > ⚠️ **Requires a reboot** if anything was just enabled. The script stops there - reboot, then run it again.
 
-### Step 2: Confirm
+### Step 2: Get the Installer
+
+Downloads the latest installer from the same link as [claude.com/download](https://claude.com/download):
+```
+https://claude.ai/api/desktop/win32/<x64|arm64>/setup/latest/redirect
+```
+(or uses the file given with `-InstallerPath`), then checks its Authenticode signature is valid and issued to **Anthropic, PBC**. If either step fails the script stops here, and **nothing has been removed**.
+
+### Step 3: Confirm
 
 Asks before deleting anything (skip with `-Force`).
 
-### Step 3: Back Up Settings
+> ⚠️ Local data includes **Cowork tasks and their files** stored on this PC. Chats sync from your account; local Cowork work does not come back.
 
-Copies the `*.json` settings files from `%APPDATA%\Claude` (and the MSIX equivalent) to `Desktop\Claude-Backup-<date>`.
+### Step 4: Back Up Settings
+
+Copies `claude_desktop_config.json` and the `Claude Extensions Settings` folder from every Claude data folder (`%LOCALAPPDATA%\Claude-Data\*`, `%APPDATA%\Claude` and the MSIX equivalent) to `Desktop\Claude-Backup-<date>`. Sign-in tokens and other app state are deliberately not copied.
 
 > 🔑 `claude_desktop_config.json` can contain API keys for your MCP servers - delete the backup once you've restored what you need.
 
-### Step 4: Close Claude and Stop CoworkVMService
+### Step 5: Close Claude and Stop CoworkVMService
 
-Closes running Claude Desktop windows (leaves the Claude Code CLI alone) and stops the Cowork service.
+Closes running Claude Desktop processes (including the Claude Code build that Claude Desktop bundles; a standalone Claude Code CLI is left alone) and stops the Cowork service.
 
-### Step 5: Uninstall Claude Desktop
+### Step 6: Uninstall Claude Desktop
 
 Removes:
 - Every `Claude` MSIX registration for your user
@@ -108,22 +122,15 @@ Removes:
 - Classic installs listed under *Apps & features* (matched by exact name, so other apps are untouched)
 - `CoworkVMService`, if it was left behind
 
-### Step 6: Clean Leftover Folders
+### Step 7: Clean Leftover Folders
 
 ```
 %APPDATA%\Claude
 %LOCALAPPDATA%\Claude
+%LOCALAPPDATA%\Claude-Data
 %LOCALAPPDATA%\AnthropicClaude
-%LOCALAPPDATA%\Packages\Claude_pzs8sxjxfjjc
+%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc
 ```
-
-### Step 7: Download Installer
-
-Downloads the latest installer from the same link as [claude.com/download](https://claude.com/download):
-```
-https://claude.ai/api/desktop/win32/<x64|arm64>/setup/latest/redirect
-```
-Then checks its Authenticode signature is valid and issued to Anthropic.
 
 ### Step 8: Run Installer
 
@@ -136,29 +143,31 @@ Runs the installer and waits for it to finish. Afterwards, launch Claude from th
    [OK] Windows hypervisor is running
    [OK] Virtual Machine Platform: already enabled
 
-   This will uninstall Claude Desktop and DELETE its local data for 'PC\me'
-   (chat history syncs from your account; local settings are backed up first).
+>> Getting the latest Claude Desktop installer...
+   [OK] Downloaded x64 installer (7.1 MB) to: C:\Users\me\AppData\Local\Temp\Claude-Setup-x64.exe
+   [OK] Signature verified: Anthropic, PBC
+
+   This will uninstall Claude Desktop and DELETE its local data for 'PC\me',
+   including Cowork tasks and their files stored on this PC.
+   (Chats sync from your account; MCP/extension settings are backed up first.)
 
    Continue? (y/n): y
 
 >> Backing up Claude Desktop settings...
-   [OK] Backed up 2 settings file(s) to: C:\Users\me\Desktop\Claude-Backup-20260928-101500
+   [OK] Backed up 1 settings item(s) to: C:\Users\me\Desktop\Claude-Backup-20260928-101500
 
 >> Closing Claude Desktop...
-   [OK] Closed 4 Claude process(es)
+   [OK] Closed 12 Claude process(es)
    [OK] CoworkVMService stopped
 
 >> Uninstalling Claude Desktop...
-   [OK] Removed MSIX package: Claude_1.0.0.0_x64__pzs8sxjxfjjc
+   [OK] Removed MSIX package: Claude_1.0.0.0_x64__pzs8sxrjxfjjc
 
 >> Cleaning up leftover folders...
    [OK] Deleted: C:\Users\me\AppData\Roaming\Claude
    [OK] Not found (skip): C:\Users\me\AppData\Local\Claude
+   [OK] Deleted: C:\Users\me\AppData\Local\Claude-Data
    ...
-
->> Downloading latest Claude Desktop installer...
-   [OK] Downloaded x64 installer (150.2 MB) to: C:\Users\me\AppData\Local\Temp\Claude-Setup-x64.exe
-   [OK] Signature verified: Anthropic, PBC
 
 >> Running installer...
    The installer window will open. Follow the prompts.
@@ -174,7 +183,7 @@ When run as a `.ps1` file the script sets an exit code (useful for RMM/Intune):
 | Code | Meaning |
 |------|---------|
 | `0` | Success |
-| `1` | Failed or cancelled (not admin, download/signature failure, user said no) |
+| `1` | Failed or cancelled (not admin, run from inside Claude, download/signature failure, user said no) |
 | `3010` | Reboot required - reboot and run again |
 | other | The installer's own exit code |
 
@@ -194,7 +203,15 @@ Reboot into your firmware settings and enable Intel VT-x / AMD-V (sometimes call
 
 ### Download or signature check fails
 
-Download the installer manually from https://claude.com/download and run it.
+Nothing has been removed at this point. The download link can refuse scripted downloads (HTTP 403) because of bot protection or a corporate proxy. Download the installer in your browser from https://claude.com/download, then run:
+
+```powershell
+.\Reset-ClaudeDesktop.ps1 -InstallerPath "$env:USERPROFILE\Downloads\<installer file name>.exe"
+```
+
+### "This PowerShell session is running inside Claude Desktop"
+
+Open a separate PowerShell window with **Run as administrator** and run the script from there.
 
 ### Cowork still doesn't work after reinstall
 
@@ -233,15 +250,17 @@ Then **restart** and re-run the script.
    ```
    %APPDATA%\Claude
    %LOCALAPPDATA%\Claude
+   %LOCALAPPDATA%\Claude-Data
    %LOCALAPPDATA%\AnthropicClaude
-   %LOCALAPPDATA%\Packages\Claude_pzs8sxjxfjjc
+   %LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc
    ```
 
 ## 🔒 Safety
 
 - ⚠️ **Deletes local Claude Desktop data** - settings are backed up to your Desktop first (unless `-SkipBackup`)
-- ✅ **Only touches Claude Desktop** - apps are matched by exact name; the Claude Code CLI is left alone
-- ✅ **Verifies the download** - only runs an installer signed by Anthropic
+- ✅ **Only touches Claude Desktop** - apps are matched by exact name; a standalone Claude Code CLI is left alone
+- ✅ **Downloads before deleting** - a failed download or signature check stops the script before anything is removed
+- ✅ **Verifies the download** - only runs an installer signed by Anthropic, PBC
 - ✅ **Asks before destructive steps and before rebooting**
 
 ## 📄 Files
@@ -250,11 +269,12 @@ Then **restart** and re-run the script.
 |------|-------------|
 | `Reset-ClaudeDesktop.ps1` | Main PowerShell script |
 | `PSScriptAnalyzerSettings.psd1` | Lint settings used by CI |
+| `tests/Reset-ClaudeDesktop.Tests.ps1` | Pester tests for the helper functions (`Invoke-Pester ./tests`) |
 | `README.md` | This documentation |
 
 ## 🤝 Contributing
 
-Found an issue or have an improvement? Open an issue or PR! CI runs PSScriptAnalyzer on every push.
+Found an issue or have an improvement? Open an issue or PR! CI runs PSScriptAnalyzer, a Windows PowerShell 5.1 parse check and the Pester tests on every push.
 
 ## 📄 License
 
