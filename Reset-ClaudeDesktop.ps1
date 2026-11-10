@@ -5,13 +5,16 @@
 
 .DESCRIPTION
     1. Checks that the Windows features Cowork needs are enabled (enables them if not).
-    2. Backs up your Claude Desktop settings (claude_desktop_config.json etc.).
-    3. Closes Claude, stops CoworkVMService and uninstalls Claude Desktop
+    2. Downloads the latest official installer and verifies its signature, before
+       anything is removed (so a failed download never leaves you without Claude).
+    3. Backs up your Claude Desktop settings (claude_desktop_config.json etc.).
+    4. Closes Claude, stops CoworkVMService and uninstalls Claude Desktop
        (MSIX package, provisioned package and any classic installer).
-    4. Deletes leftover Claude data folders.
-    5. Downloads the latest official installer, verifies its signature and runs it.
+    5. Deletes leftover Claude data folders.
+    6. Runs the installer.
 
-    Must be run from an elevated (Administrator) PowerShell session.
+    Must be run from an elevated (Administrator) PowerShell session that was NOT
+    started from inside Claude Desktop.
 
 .PARAMETER Force
     Skip the confirmation prompts. Never reboots automatically.
@@ -26,11 +29,18 @@
 .PARAMETER SkipInstall
     Only uninstall and clean up; do not download or run the installer.
 
+.PARAMETER InstallerPath
+    Use an installer you already downloaded from https://claude.com/download instead
+    of downloading one. It must still carry a valid Anthropic signature.
+
 .EXAMPLE
     .\Reset-ClaudeDesktop.ps1
 
 .EXAMPLE
     .\Reset-ClaudeDesktop.ps1 -Force -SkipBackup
+
+.EXAMPLE
+    .\Reset-ClaudeDesktop.ps1 -InstallerPath "$env:USERPROFILE\Downloads\Claude Setup.exe"
 
 .EXAMPLE
     & ([scriptblock]::Create((irm https://raw.githubusercontent.com/kbaker827/claude-clean-reinstall/main/Reset-ClaudeDesktop.ps1))) -Force
@@ -41,7 +51,9 @@ param(
     [switch]$Force,
     [switch]$EnableHyperV,
     [switch]$SkipBackup,
-    [switch]$SkipInstall
+    [switch]$SkipInstall,
+    [ValidateNotNullOrEmpty()]
+    [string]$InstallerPath
 )
 
 # -----------------------------------------------------------------
@@ -79,6 +91,28 @@ function Confirm-Action {
     if ($AssumeYes) { return $true }
     $answer = Read-Host "`n   $Prompt (y/n)"
     return ($answer -match '^\s*(y|yes)\s*$')
+}
+
+function Test-IsClaudeDesktopPath {
+    # True for executables that belong to Claude Desktop: the MSIX app, the old
+    # Squirrel install, and the Claude Code build that Claude Desktop bundles in
+    # %LOCALAPPDATA%\Claude-Data. A standalone Claude Code CLI does not match.
+    param([AllowNull()][AllowEmptyString()][string]$Path)
+    if (-not $Path) { return $false }
+    return ($Path -match '\\(WindowsApps\\Claude_|AnthropicClaude\\|Claude-Data\\)')
+}
+
+function Test-IsRunningInsideClaude {
+    # Closing Claude Desktop would also kill a terminal running inside it, which
+    # would stop this script halfway through the uninstall.
+    $processId = $PID
+    for ($depth = 0; $depth -lt 16 -and $processId; $depth++) {
+        $process = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+        if (-not $process) { return $false }
+        if (Test-IsClaudeDesktopPath -Path $process.ExecutablePath) { return $true }
+        $processId = $process.ParentProcessId
+    }
+    return $false
 }
 
 function Split-UninstallCommand {
@@ -129,6 +163,138 @@ function Get-NativeArchitecture {
     return 'x64'
 }
 
+function Test-AnthropicSignature {
+    # Exact match on the certificate's common name, so a valid certificate issued to
+    # some other company with "Anthropic" somewhere in its subject is rejected.
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string]$ExpectedSigner = 'Anthropic, PBC'
+    )
+    $signature = Get-AuthenticodeSignature -FilePath $Path
+    $signer = if ($signature.SignerCertificate) { $signature.SignerCertificate.GetNameInfo('SimpleName', $false) } else { $null }
+    return [pscustomobject]@{
+        IsValid = ([string]$signature.Status -eq 'Valid' -and $signer -eq $ExpectedSigner)
+        Status  = [string]$signature.Status
+        Signer  = $signer
+    }
+}
+
+function Write-ManualDownloadHelp {
+    Write-Host '   Nothing has been uninstalled yet.' -ForegroundColor Yellow
+    Write-Host '   Download the installer in your browser from https://claude.com/download, then run:' -ForegroundColor Yellow
+    Write-Host '     .\Reset-ClaudeDesktop.ps1 -InstallerPath "<path to the downloaded installer>"' -ForegroundColor White
+}
+
+function Get-ClaudeInstaller {
+    # Returns @{ Path; IsDownloaded } for a signature-verified installer, or $null.
+    param([string]$InstallerPath)
+
+    if ($InstallerPath) {
+        if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) {
+            Write-Fail "Installer not found: $InstallerPath"
+            return $null
+        }
+        $path = (Resolve-Path -LiteralPath $InstallerPath).ProviderPath
+        $isDownloaded = $false
+        Write-OK "Using installer: $path"
+    }
+    else {
+        $arch = Get-NativeArchitecture
+        $downloadUrl = "https://claude.ai/api/desktop/win32/$arch/setup/latest/redirect"
+        $path = Join-Path $env:TEMP "Claude-Setup-$arch.exe"
+        $isDownloaded = $true
+
+        # Windows PowerShell 5.1 may default to TLS 1.0, which the download server rejects.
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
+        try {
+            Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+            Invoke-WebRequest -Uri $downloadUrl -OutFile $path -UseBasicParsing -ErrorAction Stop
+            $sizeMb = [math]::Round((Get-Item -LiteralPath $path).Length / 1MB, 1)
+            Write-OK "Downloaded $arch installer ($sizeMb MB) to: $path"
+        }
+        catch {
+            Write-Fail "Download failed - $($_.Exception.Message)"
+            Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+            Write-ManualDownloadHelp
+            return $null
+        }
+    }
+
+    # Refuse to run anything that isn't a validly signed Anthropic binary.
+    $signature = Test-AnthropicSignature -Path $path
+    if (-not $signature.IsValid) {
+        Write-Fail "Installer signature check failed (status: $($signature.Status), signer: $($signature.Signer))."
+        if ($isDownloaded) {
+            Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+            Write-ManualDownloadHelp
+        }
+        return $null
+    }
+    Write-OK "Signature verified: $($signature.Signer)"
+
+    return [pscustomobject]@{ Path = $path; IsDownloaded = $isDownloaded }
+}
+
+function Get-ClaudeDataFolder {
+    # Every folder where some version of Claude Desktop keeps per-user data.
+    param([string[]]$PackageFamilies)
+
+    $folders = @(
+        [pscustomobject]@{ Label = 'AppData'; Path = (Join-Path $env:APPDATA 'Claude') }
+    )
+    foreach ($family in $PackageFamilies) {
+        $folders += [pscustomobject]@{
+            Label = "MSIX-$family"
+            Path  = Join-Path $env:LOCALAPPDATA "Packages\$family\LocalCache\Roaming\Claude"
+        }
+    }
+    # Current versions keep settings, sign-in and Cowork tasks here.
+    $claudeDataRoot = Join-Path $env:LOCALAPPDATA 'Claude-Data'
+    foreach ($folder in @(Get-ChildItem -LiteralPath $claudeDataRoot -Directory -ErrorAction SilentlyContinue)) {
+        $folders += [pscustomobject]@{ Label = "Claude-Data-$($folder.Name)"; Path = $folder.FullName }
+    }
+    return $folders
+}
+
+function Backup-ClaudeSetting {
+    # Copies the user-edited settings only. Other files in these folders hold
+    # sign-in tokens and app state that should not be left on the Desktop.
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][object[]]$Folders,
+        [string]$DestinationRoot = [Environment]::GetFolderPath('Desktop')
+    )
+
+    $itemsToBackUp = @('claude_desktop_config.json', 'Claude Extensions Settings')
+    $backupRoot = Join-Path $DestinationRoot ("Claude-Backup-{0:yyyyMMdd-HHmmss}" -f (Get-Date))
+    $backedUp = 0
+
+    foreach ($folder in $Folders) {
+        foreach ($item in $itemsToBackUp) {
+            $source = Join-Path $folder.Path $item
+            if (-not (Test-Path -LiteralPath $source)) { continue }
+            $destination = Join-Path $backupRoot $folder.Label
+            try {
+                $null = New-Item -ItemType Directory -Path $destination -Force
+                Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force -ErrorAction Stop
+                $backedUp++
+            }
+            catch {
+                Write-Warn "Could not back up $source - $($_.Exception.Message)"
+            }
+        }
+    }
+
+    if ($backedUp -eq 0) {
+        Write-OK 'No settings found to back up'
+        return $null
+    }
+    Write-OK "Backed up $backedUp settings item(s) to: $backupRoot"
+    Write-Host '   Note: claude_desktop_config.json may contain API keys for your MCP servers.' -ForegroundColor Yellow
+    return $backupRoot
+}
+
 # -----------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------
@@ -140,7 +306,8 @@ function Invoke-ClaudeReset {
         [switch]$Force,
         [switch]$EnableHyperV,
         [switch]$SkipBackup,
-        [switch]$SkipInstall
+        [switch]$SkipInstall,
+        [string]$InstallerPath
     )
 
     # Scoped to this function so running via "irm | iex" doesn't change the caller's session.
@@ -149,7 +316,7 @@ function Invoke-ClaudeReset {
 
     $serviceName = 'CoworkVMService'
     $packageName = 'Claude'
-    $defaultPackageFamily = 'Claude_pzs8sxjxfjjc'
+    $defaultPackageFamily = 'Claude_pzs8sxrjxfjjc'
 
     # -------------------------------------------------------------
     # 0. Pre-flight checks
@@ -162,6 +329,13 @@ function Invoke-ClaudeReset {
     if (-not (Test-IsAdministrator)) {
         Write-Fail 'This script must be run as Administrator.'
         Write-Host '   Right-click PowerShell > "Run as administrator", then run the script again.' -ForegroundColor Yellow
+        return 1
+    }
+
+    if (Test-IsRunningInsideClaude) {
+        Write-Fail 'This PowerShell session is running inside Claude Desktop.'
+        Write-Host '   Closing Claude would stop the script halfway. Open a separate PowerShell window' -ForegroundColor Yellow
+        Write-Host '   with "Run as administrator" and run the script from there.' -ForegroundColor Yellow
         return 1
     }
 
@@ -237,8 +411,11 @@ function Invoke-ClaudeReset {
     }
 
     # VMware/VirtualBox installs sometimes turn the Windows hypervisor off at boot.
-    $bcd = & bcdedit.exe /enum '{current}' 2>$null
-    if ($LASTEXITCODE -eq 0 -and ($bcd | Select-String -Pattern '^\s*hypervisorlaunchtype\s+Off\b' -Quiet)) {
+    # Windows PowerShell 5.1 turns redirected native stderr into a terminating error
+    # under ErrorActionPreference = Stop, so guard the call.
+    try { $bcd = & bcdedit.exe /enum '{current}' 2>$null }
+    catch { $bcd = $null }
+    if ($LASTEXITCODE -eq 0 -and $bcd -and ($bcd | Select-String -Pattern '^\s*hypervisorlaunchtype\s+Off\b' -Quiet)) {
         Write-Warn 'Windows hypervisor is set to not launch at boot (hypervisorlaunchtype = Off) - fixing...'
         & bcdedit.exe /set '{current}' hypervisorlaunchtype auto | Out-Null
         if ($LASTEXITCODE -eq 0) {
@@ -264,10 +441,22 @@ function Invoke-ClaudeReset {
     }
 
     # -------------------------------------------------------------
-    # 2. Confirm before doing anything destructive
+    # 2. Get the installer first, so a failed download or signature
+    #    check stops the script before anything is removed
     # -------------------------------------------------------------
-    Write-Host "`n   This will uninstall Claude Desktop and DELETE its local data for '$currentUser'" -ForegroundColor Yellow
-    Write-Host '   (chat history syncs from your account; local settings are backed up first).' -ForegroundColor Yellow
+    $installer = $null
+    if (-not $SkipInstall) {
+        Write-Step 'Getting the latest Claude Desktop installer...'
+        $installer = Get-ClaudeInstaller -InstallerPath $InstallerPath
+        if (-not $installer) { return 1 }
+    }
+
+    # -------------------------------------------------------------
+    # 3. Confirm before doing anything destructive
+    # -------------------------------------------------------------
+    Write-Host "`n   This will uninstall Claude Desktop and DELETE its local data for '$currentUser'," -ForegroundColor Yellow
+    Write-Host '   including Cowork tasks and their files stored on this PC.' -ForegroundColor Yellow
+    Write-Host '   (Chats sync from your account; MCP/extension settings are backed up first.)' -ForegroundColor Yellow
     if (-not (Confirm-Action -Prompt 'Continue?' -AssumeYes:$Force)) {
         Write-Host '   Cancelled. Nothing was changed.'
         return 1
@@ -276,56 +465,26 @@ function Invoke-ClaudeReset {
     $packages = @(Get-AppxPackage -Name $packageName -ErrorAction SilentlyContinue)
     $packageFamilies = @(@($packages | ForEach-Object { $_.PackageFamilyName }) + $defaultPackageFamily |
         Sort-Object -Unique)
+    $dataFolders = Get-ClaudeDataFolder -PackageFamilies $packageFamilies
 
     # -------------------------------------------------------------
-    # 3. Back up settings (must happen before the MSIX is removed,
+    # 4. Back up settings (must happen before the MSIX is removed,
     #    because removing it also deletes its virtualized AppData)
     # -------------------------------------------------------------
+    $backupRoot = $null
     if (-not $SkipBackup) {
         Write-Step 'Backing up Claude Desktop settings...'
-
-        $sources = @(@{ Label = 'AppData'; Path = Join-Path $env:APPDATA 'Claude' })
-        foreach ($family in $packageFamilies) {
-            $sources += @{
-                Label = "MSIX-$family"
-                Path  = Join-Path $env:LOCALAPPDATA "Packages\$family\LocalCache\Roaming\Claude"
-            }
-        }
-
-        $backupRoot = Join-Path ([Environment]::GetFolderPath('Desktop')) ("Claude-Backup-{0:yyyyMMdd-HHmmss}" -f (Get-Date))
-        $backedUp = 0
-        foreach ($source in $sources) {
-            if (-not (Test-Path -LiteralPath $source.Path)) { continue }
-            $files = @(Get-ChildItem -LiteralPath $source.Path -Filter '*.json' -File -ErrorAction SilentlyContinue)
-            if ($files.Count -eq 0) { continue }
-            $destination = Join-Path $backupRoot $source.Label
-            try {
-                $null = New-Item -ItemType Directory -Path $destination -Force
-                $files | Copy-Item -Destination $destination -Force
-                $backedUp += $files.Count
-            }
-            catch {
-                Write-Warn "Could not back up $($source.Path) - $($_.Exception.Message)"
-            }
-        }
-
-        if ($backedUp -gt 0) {
-            Write-OK "Backed up $backedUp settings file(s) to: $backupRoot"
-            Write-Host '   Note: claude_desktop_config.json may contain API keys for your MCP servers.' -ForegroundColor Yellow
-        }
-        else {
-            Write-OK 'No settings files found to back up'
-        }
+        $backupRoot = Backup-ClaudeSetting -Folders $dataFolders
     }
 
     # -------------------------------------------------------------
-    # 4. Close Claude and stop CoworkVMService
+    # 5. Close Claude and stop CoworkVMService
     # -------------------------------------------------------------
     Write-Step 'Closing Claude Desktop...'
 
-    # Match on install location so the Claude Code CLI (also claude.exe) is left alone.
+    # Match on install location so a standalone Claude Code CLI (also claude.exe) is left alone.
     $claudeProcesses = @(Get-Process -Name 'Claude' -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -match '\\(WindowsApps\\Claude_|AnthropicClaude\\)' })
+        Where-Object { Test-IsClaudeDesktopPath -Path $_.Path })
     if ($claudeProcesses.Count -gt 0) {
         $claudeProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
@@ -353,7 +512,7 @@ function Invoke-ClaudeReset {
     }
 
     # -------------------------------------------------------------
-    # 5. Uninstall Claude Desktop
+    # 6. Uninstall Claude Desktop
     # -------------------------------------------------------------
     Write-Step 'Uninstalling Claude Desktop...'
 
@@ -441,14 +600,15 @@ function Invoke-ClaudeReset {
     }
 
     # -------------------------------------------------------------
-    # 6. Delete leftover data folders
+    # 7. Delete leftover data folders
     # -------------------------------------------------------------
     Write-Step 'Cleaning up leftover folders...'
 
     $foldersToDelete = @(
         (Join-Path $env:APPDATA 'Claude'),
         (Join-Path $env:LOCALAPPDATA 'Claude'),
-        (Join-Path $env:LOCALAPPDATA 'AnthropicClaude')   # older (Squirrel) installs
+        (Join-Path $env:LOCALAPPDATA 'Claude-Data'),       # current versions
+        (Join-Path $env:LOCALAPPDATA 'AnthropicClaude')    # older (Squirrel) installs
     )
     foreach ($family in $packageFamilies) {
         $foldersToDelete += Join-Path $env:LOCALAPPDATA "Packages\$family"
@@ -471,42 +631,9 @@ function Invoke-ClaudeReset {
 
     if ($SkipInstall) {
         Write-Host "`n   Claude Desktop has been removed (-SkipInstall: not reinstalling)." -ForegroundColor Cyan
+        if ($backupRoot) { Write-Host "   Your old settings are in: $backupRoot" -ForegroundColor Cyan }
         return 0
     }
-
-    # -------------------------------------------------------------
-    # 7. Download fresh installer
-    # -------------------------------------------------------------
-    Write-Step 'Downloading latest Claude Desktop installer...'
-
-    $arch = Get-NativeArchitecture
-    $downloadUrl = "https://claude.ai/api/desktop/win32/$arch/setup/latest/redirect"
-    $installerPath = Join-Path $env:TEMP "Claude-Setup-$arch.exe"
-
-    # Windows PowerShell 5.1 may default to TLS 1.0, which the download server rejects.
-    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-
-    try {
-        Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
-        Invoke-WebRequest -Uri $downloadUrl -OutFile $installerPath -UseBasicParsing -ErrorAction Stop
-        $sizeMb = [math]::Round((Get-Item -LiteralPath $installerPath).Length / 1MB, 1)
-        Write-OK "Downloaded $arch installer ($sizeMb MB) to: $installerPath"
-    }
-    catch {
-        Write-Fail "Download failed - $($_.Exception.Message)"
-        Write-Host '   Download the installer manually from https://claude.com/download and run it.' -ForegroundColor Yellow
-        return 1
-    }
-
-    # Refuse to run anything that isn't a validly signed Anthropic binary.
-    $signature = Get-AuthenticodeSignature -FilePath $installerPath
-    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Anthropic') {
-        Write-Fail "Installer signature check failed (status: $($signature.Status), signer: $($signature.SignerCertificate.Subject))."
-        Write-Host '   The file was deleted. Download the installer manually from https://claude.com/download.' -ForegroundColor Yellow
-        Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
-        return 1
-    }
-    Write-OK "Signature verified: $($signature.SignerCertificate.GetNameInfo('SimpleName', $false))"
 
     # -------------------------------------------------------------
     # 8. Run installer
@@ -516,17 +643,19 @@ function Invoke-ClaudeReset {
 
     # WaitForExit() waits for the installer only; Start-Process -Wait would also wait
     # for Claude itself if the installer launches it when finished.
-    $installer = Start-Process -FilePath $installerPath -PassThru
-    $null = $installer.Handle   # keeps ExitCode readable after exit on Windows PowerShell 5.1
-    $installer.WaitForExit()
+    $installerProcess = Start-Process -FilePath $installer.Path -PassThru
+    $null = $installerProcess.Handle   # keeps ExitCode readable after exit on Windows PowerShell 5.1
+    $installerProcess.WaitForExit()
 
-    if ($installer.ExitCode -ne 0) {
-        Write-Fail "Installer exited with code $($installer.ExitCode)"
-        Write-Host "   The installer was kept at $installerPath so you can retry it." -ForegroundColor Yellow
-        return $installer.ExitCode
+    if ($installerProcess.ExitCode -ne 0) {
+        Write-Fail "Installer exited with code $($installerProcess.ExitCode)"
+        Write-Host "   The installer was kept at $($installer.Path) so you can retry it." -ForegroundColor Yellow
+        return $installerProcess.ExitCode
     }
     Write-OK 'Installer finished'
-    Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
+    if ($installer.IsDownloaded) {
+        Remove-Item -LiteralPath $installer.Path -Force -ErrorAction SilentlyContinue
+    }
 
     $installed = Get-AppxPackage -Name $packageName -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($installed) {
@@ -546,7 +675,7 @@ function Invoke-ClaudeReset {
     Write-Host ' Done! Launch Claude Desktop from the Start menu and check Cowork.' -ForegroundColor Cyan
     Write-Host ' If Claude opened by itself, close it and relaunch it from the' -ForegroundColor Cyan
     Write-Host ' Start menu so it does not run as Administrator.' -ForegroundColor Cyan
-    if (-not $SkipBackup -and $backedUp -gt 0) {
+    if ($backupRoot) {
         Write-Host " Your old settings are in: $backupRoot" -ForegroundColor Cyan
     }
     Write-Host ' If Cowork still fails:' -ForegroundColor Cyan
@@ -556,7 +685,7 @@ function Invoke-ClaudeReset {
     return 0
 }
 
-$exitCode = Invoke-ClaudeReset -Force:$Force -EnableHyperV:$EnableHyperV -SkipBackup:$SkipBackup -SkipInstall:$SkipInstall
+$exitCode = Invoke-ClaudeReset -Force:$Force -EnableHyperV:$EnableHyperV -SkipBackup:$SkipBackup -SkipInstall:$SkipInstall -InstallerPath $InstallerPath
 
 # Only set a process exit code when run as a .ps1 file; under "irm | iex" an
 # exit would close the user's PowerShell window.
